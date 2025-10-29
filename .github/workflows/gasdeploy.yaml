@@ -1,0 +1,117 @@
+name: Deploy GAS project
+
+on:
+  push:
+    branches:
+      - main
+  pull_request_review:
+    types:
+      - submitted
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    if: github.event_name != 'pull_request_review' || github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    env:
+      GAS_DEPLOYMENT_ID: ${{ secrets.GAS_DEPLOYMENT_ID }}
+    steps:
+      - name: Checkout pull request head
+        if: github.event_name == 'pull_request_review'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Checkout current ref
+        if: github.event_name != 'pull_request_review'
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install clasp
+        run: npm install -g @google/clasp
+
+      - name: Configure clasp authentication
+        env:
+          CLASP_REFRESH_TOKEN: ${{ secrets.CLASP_REFRESH_TOKEN }}
+          CLASP_CLIENT_ID: ${{ secrets.CLASP_CLIENT_ID }}
+          CLASP_CLIENT_SECRET: ${{ secrets.CLASP_CLIENT_SECRET }}
+          SCRIPT_ID: ${{ secrets.GAS_SCRIPT_ID }}
+        run: |
+          mkdir -p ~/.clasprc
+          cat <<JSON > ~/.clasprc.json
+          {
+            "token": {
+              "access_token": "",
+              "refresh_token": "${CLASP_REFRESH_TOKEN}",
+              "scope": [
+                "https://www.googleapis.com/auth/script.projects",
+                "https://www.googleapis.com/auth/script.deployments",
+                "https://www.googleapis.com/auth/script.scriptapp"
+              ],
+              "token_type": "Bearer",
+              "expiry_date": 0
+            },
+            "oauth2ClientSettings": {
+              "clientId": "${CLASP_CLIENT_ID}",
+              "clientSecret": "${CLASP_CLIENT_SECRET}"
+            },
+            "isLocalCreds": false
+          }
+          JSON
+          clasp settings scriptId ${SCRIPT_ID}
+
+      - name: Push source to Apps Script
+        run: clasp push --force
+
+      - name: Create version
+        id: version
+        run: |
+          set -euo pipefail
+          clasp version --description "Deploy ${GITHUB_SHA}"
+          VERSION_NUMBER=$(clasp versions --json | jq '.[-1].versionNumber')
+          if [ -z "$VERSION_NUMBER" ] || [ "$VERSION_NUMBER" = "null" ]; then
+            echo "Failed to determine version number" >&2
+            exit 1
+          fi
+          echo "version=$VERSION_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Promote deployment
+        if: env.GAS_DEPLOYMENT_ID != ''
+        run: |
+          clasp deploy --deploymentId ${GAS_DEPLOYMENT_ID} --versionNumber ${{ steps.version.outputs.version }}
+
+      - name: Run Apps Script health check
+        id: health
+        run: |
+          set -euo pipefail
+          clasp run healthCheck --json > healthCheck.json
+          cat healthCheck.json
+          echo "json<<EOF" >> $GITHUB_OUTPUT
+          cat healthCheck.json >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Publish deployment summary
+        run: |
+          echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Event: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event_name }}" = "pull_request_review" ]; then
+            echo "- PR: #${{ github.event.pull_request.number }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat healthCheck.json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify missing deployment id
+        if: env.GAS_DEPLOYMENT_ID == ''
+        run: echo "GAS_DEPLOYMENT_ID secret not provided; skipping deployment promotion"
+
+      - name: TODO Notify Slack
+        if: always()
+        run: echo "Integrate Slack notification using incoming webhook"
