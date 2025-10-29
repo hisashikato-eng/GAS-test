@@ -1,0 +1,92 @@
+name: Roll back GAS project
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git reference (commit SHA, tag, or branch) to deploy'
+        required: true
+      version_description:
+        description: 'Optional description for the rollback version'
+        required: false
+        default: 'Manual rollback'
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    env:
+      GAS_DEPLOYMENT_ID: ${{ secrets.GAS_DEPLOYMENT_ID }}
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install clasp
+        run: npm install -g @google/clasp
+
+      - name: Configure clasp authentication
+        env:
+          CLASP_REFRESH_TOKEN: ${{ secrets.CLASP_REFRESH_TOKEN }}
+          CLASP_CLIENT_ID: ${{ secrets.CLASP_CLIENT_ID }}
+          CLASP_CLIENT_SECRET: ${{ secrets.CLASP_CLIENT_SECRET }}
+          SCRIPT_ID: ${{ secrets.GAS_SCRIPT_ID }}
+        run: |
+          mkdir -p ~/.clasprc
+          cat <<JSON > ~/.clasprc.json
+          {
+            "token": {
+              "access_token": "",
+              "refresh_token": "${CLASP_REFRESH_TOKEN}",
+              "scope": [
+                "https://www.googleapis.com/auth/script.projects",
+                "https://www.googleapis.com/auth/script.deployments",
+                "https://www.googleapis.com/auth/script.scriptapp"
+              ],
+              "token_type": "Bearer",
+              "expiry_date": 0
+            },
+            "oauth2ClientSettings": {
+              "clientId": "${CLASP_CLIENT_ID}",
+              "clientSecret": "${CLASP_CLIENT_SECRET}"
+            },
+            "isLocalCreds": false
+          }
+          JSON
+          clasp settings scriptId ${SCRIPT_ID}
+
+      - name: Push requested version to Apps Script
+        run: clasp push --force
+
+      - name: Create rollback version
+        id: version
+        run: |
+          set -euo pipefail
+          clasp version --description "${{ inputs.version_description }} (${GITHUB_REF_NAME})"
+          VERSION_NUMBER=$(clasp versions --json | jq '.[-1].versionNumber')
+          if [ -z "$VERSION_NUMBER" ] || [ "$VERSION_NUMBER" = "null" ]; then
+            echo "Failed to determine version number" >&2
+            exit 1
+          fi
+          echo "version=$VERSION_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Promote rollback deployment
+        if: env.GAS_DEPLOYMENT_ID != ''
+        run: |
+          clasp deploy --deploymentId ${GAS_DEPLOYMENT_ID} --versionNumber ${{ steps.version.outputs.version }}
+
+      - name: Publish rollback summary
+        run: |
+          echo "### Rollback Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Ref: ${{ inputs.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Description: ${{ inputs.version_description }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify missing deployment id
+        if: env.GAS_DEPLOYMENT_ID == ''
+        run: echo "GAS_DEPLOYMENT_ID secret not provided; skipping deployment promotion"
