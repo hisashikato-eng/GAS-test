@@ -49,6 +49,33 @@ var TaskCheckBot = (function () {
       };
     }
 
+    var deadlineValidation = validateDeadline(task.deadline);
+    if (!deadlineValidation.valid) {
+      return deadlineValidation;
+    }
+
+    return { valid: true };
+  }
+
+  function validateDeadline(deadline) {
+    var parsed = new Date(deadline);
+    if (isNaN(parsed.getTime())) {
+      return {
+        valid: false,
+        message: '期限は YYYY-MM-DD 形式で入力してください。'
+      };
+    }
+
+    var todayTokyo = new Date(Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd'));
+    var targetDate = new Date(Utilities.formatDate(parsed, 'Asia/Tokyo', 'yyyy-MM-dd'));
+
+    if (targetDate < todayTokyo) {
+      return {
+        valid: false,
+        message: '期限は今日以降の日付を指定してください。'
+      };
+    }
+
     return { valid: true };
   }
 
