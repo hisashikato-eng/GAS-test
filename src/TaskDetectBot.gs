@@ -79,7 +79,7 @@ var TaskDetectBot = (function () {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: '*タスク名*: ' + task.title + '\n*担当候補*: ' + (task.assignees.length ? task.assignees.join(', ') : '未指定')
+          text: '*タスク名*: ' + task.title + '\n*担当候補*: ' + formatAssigneeMentions(task.assignees)
         }
       },
       {
@@ -100,6 +100,16 @@ var TaskDetectBot = (function () {
         ]
       }
     ];
+  }
+
+  function formatAssigneeMentions(ids) {
+    if (!ids || !ids.length) {
+      return '未指定';
+    }
+
+    return ids.map(function (id) {
+      return '<@' + id + '>';
+    }).join(', ');
   }
 
   return {
